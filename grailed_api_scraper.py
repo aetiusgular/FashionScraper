@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -123,7 +125,7 @@ def get_algolia_credentials():
     return algolia_key, algolia_app_id
 
 
-def scrape_sold_listings_api(query, max_results=200):
+def scrape_sold_listings_api(query, max_results=200, min_delay=2.0, max_delay=5.0):
     algolia_key, algolia_app_id = get_algolia_credentials()
 
     if not algolia_key or not algolia_app_id:
@@ -131,6 +133,7 @@ def scrape_sold_listings_api(query, max_results=200):
         return []
 
     print(f"Scraping sold listings for {query}")
+    print(f"Delay between pages: {min_delay}-{max_delay}s")
 
     url = "https://mnrwefss2q-dsn.algolia.net/1/indexes/*/queries?x-algolia-agent=Algolia%20for%20JavaScript%20(4.14.3)%3B%20Browser%3B%20instantsearch.js%20(4.75.5)%3B%20react%20(18.2.0)%3B%20react-instantsearch%20(7.13.8)%3B%20react-instantsearch-core%20(7.13.8)%3B%20next.js%20(14.2.33)%3B%20JS%20Helper%20(3.22.5)"
 
@@ -156,6 +159,7 @@ def scrape_sold_listings_api(query, max_results=200):
 
     all_listings = []
     page = 0
+    consecutive_errors = 0
 
     while len(all_listings) < max_results:
         payload = {
@@ -172,6 +176,8 @@ def scrape_sold_listings_api(query, max_results=200):
 
             if response.status_code == 200:
                 data = response.json()
+                consecutive_errors = 0
+
                 if 'results' in data and len(data['results']) > 0:
                     hits = data['results'][0].get('hits', [])
 
@@ -185,14 +191,43 @@ def scrape_sold_listings_api(query, max_results=200):
                     page += 1
                 else:
                     break
+
+            elif response.status_code == 429:
+                consecutive_errors += 1
+                backoff = min(60, (2 ** consecutive_errors) + random.uniform(0, 1))
+                print(f"Rate limited. Backing off for {backoff:.1f}s")
+                time.sleep(backoff)
+                continue
+
             else:
                 print(f"Error HTTP {response.status_code}")
                 print(response.text)
-                break
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    print("Too many consecutive errors. Stopping")
+                    break
+                time.sleep(10)
+                continue
 
         except Exception as e:
             print(f"Error fetching page {page}: {e}")
-            break
+            consecutive_errors += 1
+            if consecutive_errors >= 3:
+                print("Too many consecutive errors. Stopping")
+                break
+            time.sleep(10)
+            continue
+
+        # Random delay between requests to mimic human browsing
+        if len(all_listings) < max_results:
+            delay = random.uniform(min_delay, max_delay)
+            # Gradually increase delay every 10 pages to be safer
+            if page > 0 and page % 10 == 0:
+                delay += random.uniform(2.0, 5.0)
+                print(f"Extended pause after {page} pages: {delay:.1f}s")
+            else:
+                print(f"Waiting {delay:.1f}s")
+            time.sleep(delay)
 
     print(f"Total listings scraped {len(all_listings)}")
     return all_listings
@@ -280,9 +315,10 @@ def main():
         print("No authentication found. Running login")
         login_and_save_cookies()
 
-    query = sys.argv[1] if len(sys.argv) > 1 else "rick owens"
+    query = sys.argv[1] if len(sys.argv) > 1 else ""
+    max_results = int(sys.argv[2]) if len(sys.argv) > 2 else 200
 
-    listings = scrape_sold_listings_api(query, max_results=200)
+    listings = scrape_sold_listings_api(query, max_results=max_results)
 
     if listings:
         print(f"Saving {len(listings)} listings to {OUTPUT_FILE}")
@@ -315,3 +351,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
